@@ -4,20 +4,24 @@
 # must be able to verify itself. Checks:
 #   1. python toolchain availability
 #   2. DSH skill manifest validity (naming/frontmatter/set/cross-refs) via tests/test_manifest.py
-#   3. installed preset + user-global skills under ~/.dsh: existence/count checks
-#      PLUS content reconciliation against install-manifest.yaml (sha256 → 0
-#      missing / 0 drift / 0 orphan). Counting directories only proves "17
-#      directories exist"; it cannot see a stale, edited or orphaned copy — the
-#      same silently-green failure class the preset-row gate eliminates.
+#   3. installed artifacts under ~/.dsh: (a) the BUNDLE is selected in at least one
+#      profile's `dsh.profile.bundles` — under DSH >= 0.1.7 that is the only thing
+#      that makes a preset exist; (b) the user-global skills are reconciled against
+#      the install manifest by sha256 (0 missing / 0 drift / 0 orphan). A directory
+#      count only proves "17 directories exist" and cannot see a stale, edited or
+#      orphaned copy — the same silently-green failure class the preset-row gate
+#      eliminates (2026-09-23: this section checked the legacy directory that
+#      nothing reads, so it stayed green while sessions failed to resume).
 #      (Reasonix archived: no validate_manifest.py self-scan anymore)
 #   4. plugin tool-schema shape (compiled JSON-Schema parameters) via
 #      tests/check_plugin_schema.mjs — a flat spec would reach the LLM without
 #      a top-level type and break every session ("Invalid schema ... type: null").
 #   5. preset row resolvability via tests/audit_preset_rows.mjs — every `name:` in
-#      the composition must resolve against the harness package set; an upstream
-#      rename/removal otherwise surfaces only when a session resume fails to mount
-#      (2026-09-09 drift: dsh-workflow-worker-thread → dsh-workflow-ptc, see
-#      .investigations/dsh-upstream-drift-20260909/报告.md).
+#      the ACTIVE carrier (the bundle patch `dsh/cordis.patch.yml`) must resolve.
+#      Two incidents this gate exists to catch: the 2026-09-09 upstream rename
+#      (dsh-workflow-worker-thread → dsh-workflow-ptc) and the 2026-09-23 carrier
+#      migration, where the gate did not know the bundle carrier and stayed green
+#      while sessions reported `Unknown agent preset`.
 
 $ErrorActionPreference = 'Continue'
 
@@ -46,24 +50,53 @@ if ($LASTEXITCODE -ne 0) { $fail = 1 }
 Write-Host ""
 Write-Host "[3] installed artifacts"
 $dshHome = if ($env:DSH_HOME) { $env:DSH_HOME } else { Join-Path $HOME '.dsh' }
-$presetDir = Join-Path $dshHome '.agent-presets\re-framework'
-if (Test-Path (Join-Path $presetDir 'agent.cordis.yml')) {
-  Write-Host "  OK preset: $presetDir"
-} else {
-  Write-Host "  FAIL: preset not installed — run scripts/install.ps1"; $fail = 1
-}
-$presetSkills = Join-Path $presetDir 'skills'
-$count = @(Get-ChildItem -Path $presetSkills -Directory -ErrorAction SilentlyContinue).Count
-Write-Host "  OK embedded skills: $count directories (expected 17)"
-if ($count -lt 17) { Write-Host "  FAIL: expected 17 ref-* skills"; $fail = 1 }
 $userSkills = Join-Path $dshHome 'skills'
+
+# 3a. Bundle selected in at least one profile. Under DSH >= 0.1.7 a preset exists
+#     ONLY if its bundle is listed in a profile's ordered `dsh.profile.bundles`;
+#     the legacy directory (`~/.dsh/.agent-presets/<id>/`) is read by nothing.
+#     Checking that directory (as this section used to) is exactly the
+#     silently-green failure class that let "selfcheck green, resume fails"
+#     happen on 2026-09-23.
+$bundleManifestPath = Join-Path (Split-Path $PSScriptRoot -Parent) 'package.json'
+$bundleName = $null
+if (Test-Path $bundleManifestPath) {
+  try { $bundleName = (Get-Content $bundleManifestPath -Raw | ConvertFrom-Json).name } catch { $bundleName = $null }
+}
+if (-not $bundleName) {
+  Write-Host "  FAIL: cannot read the bundle name from dsh/package.json"; $fail = 1
+} else {
+  $profilesDir = Join-Path $dshHome 'profiles'
+  $selectedIn = @()
+  $profileDirs = @()
+  if (Test-Path $profilesDir) {
+    $profileDirs = @(Get-ChildItem -Path $profilesDir -Directory | Where-Object {
+      $_.Name -ne 'node_modules' -and (Test-Path (Join-Path $_.FullName 'package.json'))
+    })
+  }
+  foreach ($pd in $profileDirs) {
+    try {
+      $pj = Get-Content (Join-Path $pd.FullName 'package.json') -Raw | ConvertFrom-Json
+      $bundles = @($pj.dsh.profile.bundles)
+      if ($bundles -contains $bundleName) { $selectedIn += $pd.Name }
+    } catch { /* 坏 manifest 已在下面报 */ }
+  }
+  if ($profileDirs.Count -eq 0) {
+    Write-Host "  FAIL: no DSH profile found under $profilesDir — the bundle cannot be selected"; $fail = 1
+  } elseif ($selectedIn.Count -eq 0) {
+    Write-Host "  FAIL: bundle '$bundleName' is not selected in any profile's dsh.profile.bundles — run scripts/install.ps1"; $fail = 1
+  } else {
+    Write-Host "  OK bundle selected: $bundleName (profile(s): $($selectedIn -join ', '))"
+  }
+}
+
 $userCount = @(Get-ChildItem -Path $userSkills -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -match $skillNamespace }).Count
 Write-Host "  OK user-global skills: $userCount ref-family directories (expected 17, visible in any session)"
 if ($userCount -lt 17) { Write-Host "  FAIL: expected 17 user-global ref-family skills"; $fail = 1 }
 
 # 3b. Content reconciliation against the install manifest (CoreSwap paper study
-#     b2 rec.1). The count checks above only prove "17 directories exist" — they
-#     cannot see an edited, stale or orphaned copy, so they are the same
+#     b2 rec.1). The count check above only proves "17 directories exist" — it
+#     cannot see an edited, stale or orphaned copy, so it is the same
 #     silently-green failure class the preset-row gate was built to eliminate.
 #     These checks prove the CONTENT is what install.ps1 actually wrote.
 #     Reconcile a manifest against disk; returns "MISSING/DRIFT/ORPHAN" counters.
@@ -114,7 +147,6 @@ function Test-InstallManifest($manifestPath, $label, $namespace) {
     $script:fail = 1
   }
 }
-Test-InstallManifest (Join-Path $presetDir 'install-manifest.yaml') 'preset' $null
 Test-InstallManifest (Join-Path $userSkills '.re-framework-manifest.yaml') 'user-global' $skillNamespace
 # Global tool group must be WITHDRAWN (user decision 2026-08-15): no
 # re-framework-tools-global row in any profile patch, no profile-local plugin

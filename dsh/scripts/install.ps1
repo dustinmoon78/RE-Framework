@@ -1,10 +1,29 @@
-# install.ps1 — Install/sync the RE-Framework DSH project into the DSH runtime.
+# install.ps1 — Install/sync the RE-Framework DSH bundle into the DSH runtime.
 #
-# Source of truth: E:\PYTHON\RE-Framework\dsh
-#   preset/agent.cordis.yml + preset/preset.yml      → ~/.dsh/.agent-presets/re-framework/
-#   plugins/re-framework-tools.js                    → ~/.dsh/.agent-presets/re-framework/plugins/ (preset-embedded)
-#   skills/*                                         → ~/.dsh/.agent-presets/re-framework/skills/ (preset-embedded)
-#                                                   → ~/.dsh/skills/                             (user-global)
+# DSH >= 0.1.7: an agent preset is a `@deepseek-ai/dsh-agent-preset` declaration
+# row carried by a BUNDLE PATCH. The legacy directory form
+# (`$DSH_HOME/.agent-presets/<id>/`) is read by NOTHING — upstream:
+# "Nothing reads that directory any more"
+# (packages/preset/agent-preset/skills/editing-cordis-compositions/SKILL.md).
+#
+# Source of truth: E:\PYTHON\RE-Framework\dsh  (this subtree IS the bundle package)
+#   dsh/package.json                                 → bundle identity (`dsh.bundle.patch`)
+#   dsh/cordis.patch.yml                             → the preset declaration (ACTIVE carrier)
+#   dsh/plugins/re-framework-tools.js                → addressed by bare package subpath
+#                                                      (`@dsh-external/dsh-re-framework/plugin`)
+#   dsh/skills/*                                     → served from the bundle via
+#                                                      skill-filesystem customSkillDirs
+#                                                    → copied to ~/.dsh/skills/ (user-global)
+#
+# What this script does:
+#   1. verifies the bundle package (package.json + the patch it names)
+#   2. runs the preset-row gate BEFORE installing (a bundle whose rows do not
+#      resolve installs cleanly and then fails at session creation — the
+#      2026-09-23 incident)
+#   3. copies the ref-* skills to the user-global root
+#   4. installs/selects the bundle in every target profile with
+#      `dsh plugin --profile <p> add <bundle dir>` (pnpm dependency + the profile's
+#      ordered `dsh.profile.bundles`)
 #
 # Visibility design (per user decision 2026-08-15 — NO global tool group):
 #   - Skills are user-global (~/.dsh/skills/ref-*): any session on any preset
@@ -14,31 +33,43 @@
 #     init — manifest_validate/install were retired with the Reasonix archive,
 #     2026-08-21; merge_index.py stays at the repo root for ref_merge_index).
 #     The earlier profile-patch global mount (re-framework-tools-global in
-#     <profile>/cordis.patch.yml) is removed by this script, so no other
-#     session carries the extra tool group.
+#     <profile>/cordis.patch.yml) is withdrawn by this script (idempotent
+#     cleanup), so no other session carries the extra tool group.
 #
 # GATE: never ship a plugin whose tool schemas are not compiled JSON Schema.
 # A flat per-property spec is projected verbatim to the LLM without a top-level
 # type and breaks EVERY session (2026-08-13 Anchorlaw incident). The check
-# (tests/check_plugin_schema.mjs) runs before the plugin is copied anywhere.
+# (tests/check_plugin_schema.mjs) runs before anything is installed.
 #
 # Idempotent: safe to re-run after editing any source file. Requires full file
 # access to the DSH home (outside the session workspace).
+
+param(
+  # DSH profile to install the bundle into. Empty = auto-detect every profile
+  # directory under <dshHome>/profiles holding a package.json (never a hard-coded
+  # default).
+  #
+  # NOTE: this is `-ProfileName`, NOT `-Profile`. PowerShell variable names are
+  # case-INSENSITIVE, and the legacy-cleanup loop below uses `$profile` as its
+  # iterator — a `$Profile` parameter would be silently overwritten by that loop
+  # (observed: the installer then passed a full directory path as the profile
+  # name and `dsh` rejected it).
+  [string]$ProfileName = ''
+)
 
 $ErrorActionPreference = 'Stop'
 
 $srcRoot  = Split-Path -Parent $PSScriptRoot
 $dshHome  = if ($env:DSH_HOME) { $env:DSH_HOME } else { Join-Path $HOME '.dsh' }
-$presetDir = Join-Path $dshHome '.agent-presets\re-framework'
 $userSkills = Join-Path $dshHome 'skills'
 # This framework's skill namespace in the SHARED ~/.dsh/skills tree. Only names
 # matching this prefix are ever refreshed or cleaned; other frameworks'
 # (e.g. Anchorlaw's anchor-*) skills are left untouched.
 $skillNamespace = '^(core|re|recode|swe|ref)-'
 
-Write-Host "== RE-Framework DSH install =="
-Write-Host "source      : $srcRoot"
-Write-Host "preset      : $presetDir"
+Write-Host "== RE-Framework DSH bundle install =="
+Write-Host "bundle      : $srcRoot"
+Write-Host "dshHome     : $dshHome"
 Write-Host "user skills : $userSkills (user-global, any session)"
 
 # 0. Schema gate: never copy a plugin whose tool schemas are not compiled JSON
@@ -125,20 +156,35 @@ else:
   }
 }
 
-# 2. Preset composition + metadata
-New-Item -ItemType Directory -Path $presetDir -Force | Out-Null
-Copy-Item -Path (Join-Path $srcRoot 'preset\agent.cordis.yml') -Destination $presetDir -Force
-Copy-Item -Path (Join-Path $srcRoot 'preset\preset.yml')       -Destination $presetDir -Force
+# 2. Bundle package: verify it, then gate the preset rows BEFORE anything installs.
+#
+#    DSH >= 0.1.7 carries an agent preset as a `@deepseek-ai/dsh-agent-preset`
+#    declaration row inside a BUNDLE PATCH (dsh/cordis.patch.yml). The legacy
+#    directory form (~/.dsh/.agent-presets/re-framework/) is read by NOTHING —
+#    upstream: "Nothing reads that directory any more"
+#    (packages/preset/agent-preset/skills/editing-cordis-compositions/SKILL.md).
+$bundleDir = $srcRoot
+$bundleManifestPath = Join-Path $bundleDir 'package.json'
+if (-not (Test-Path $bundleManifestPath)) { throw "bundle manifest missing: $bundleManifestPath" }
+$bundleManifest = Get-Content $bundleManifestPath -Raw | ConvertFrom-Json
+$bundleName = $bundleManifest.name
+$patchRel = $bundleManifest.dsh.bundle.patch
+if (-not $bundleName) { throw "$bundleManifestPath declares no name" }
+if (-not $patchRel) { throw "$bundleManifestPath declares no dsh.bundle.patch" }
+$bundlePatchPath = Join-Path $bundleDir $patchRel
+if (-not (Test-Path $bundlePatchPath)) { throw "bundle patch missing: $bundlePatchPath" }
+Write-Host "  OK bundle: $bundleName  patch: $patchRel"
 
-# 3. Plugin file (preset-embedded)
-New-Item -ItemType Directory -Path (Join-Path $presetDir 'plugins') -Force | Out-Null
-Copy-Item -Path (Join-Path $srcRoot 'plugins\re-framework-tools.js') -Destination (Join-Path $presetDir 'plugins') -Force
+#    The row gate runs BEFORE install: a bundle whose preset rows do not resolve
+#    installs cleanly and then fails at session creation — exactly the 2026-09-23
+#    incident (gate green, `Unknown agent preset` on resume).
+node (Join-Path $srcRoot 'tests\audit_preset_rows.mjs') 2>&1
+if ($LASTEXITCODE -ne 0) { throw "preset row gate failed - refusing to install" }
 
-# 4. Skills: preset-embedded refresh + user-global refresh
+# 3. Skills → user-global root (visible in every session, on any preset, in any
+#    project). The preset ALSO serves them from the bundle via skill-filesystem
+#    customSkillDirs, so this copy is the second visibility path, not the only one.
 if (Test-Path (Join-Path $srcRoot 'skills')) {
-  $presetSkills = Join-Path $presetDir 'skills'
-  Remove-Item -Path $presetSkills -Recurse -Force -ErrorAction SilentlyContinue
-  Copy-Item -Path (Join-Path $srcRoot 'skills') -Destination $presetSkills -Recurse -Force
 
   # 4a. Orphan cleanup in the user-global tree, RESTRICTED to this framework's
   #     namespace ($skillNamespace). ~/.dsh/skills is SHARED with other
@@ -183,11 +229,6 @@ try {
 $installedAt = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
 
 $manifestTargets = @()
-foreach ($f in @(Get-ChildItem -Path $presetDir -Recurse -File -ErrorAction SilentlyContinue |
-                 Where-Object { $_.Name -notlike 'install-manifest.yaml' -and $_.Name -notlike '*.bak-ref-install' })) {
-  $rel = $f.FullName.Substring($presetDir.Length).TrimStart('\').Replace('\', '/')
-  $manifestTargets += [pscustomobject]@{ id = "preset/$rel"; target = $f.FullName; sha256 = (Get-FileHash $f.FullName -Algorithm SHA256).Hash.ToLower() }
-}
 foreach ($f in @(Get-ChildItem -Path $userSkills -Recurse -File -ErrorAction SilentlyContinue |
                  Where-Object { $_.Name -notlike '.re-framework-manifest.yaml' })) {
   $dirName = Split-Path (Split-Path $f.FullName -Parent) -Leaf
@@ -196,13 +237,47 @@ foreach ($f in @(Get-ChildItem -Path $userSkills -Recurse -File -ErrorAction Sil
   $manifestTargets += [pscustomobject]@{ id = "skills/$rel"; target = $f.FullName; sha256 = (Get-FileHash $f.FullName -Algorithm SHA256).Hash.ToLower() }
 }
 
+# 4. Install/select the bundle in every target profile. pnpm adds the dependency
+#    and the plugin manager's reconcile() appends the entry to the profile's
+#    ordered `dsh.profile.bundles` (@deepseek-ai/dsh-plugin-manager operations.ts).
+#    This REPLACES the old directory copy: "selected in dsh.profile.bundles" is
+#    what makes a preset exist under DSH >= 0.1.7.
+$profilesDir = Join-Path $dshHome 'profiles'
+$targetProfiles = @()
+if ($ProfileName) {
+  $targetProfiles = @($ProfileName)
+} elseif (Test-Path $profilesDir) {
+  $targetProfiles = @(Get-ChildItem -Path $profilesDir -Directory | Where-Object {
+    $_.Name -ne 'node_modules' -and (Test-Path (Join-Path $_.FullName 'package.json'))
+  } | ForEach-Object { $_.Name })
+}
+
+$selectedIn = @()
+if ($targetProfiles.Count -eq 0) {
+  Write-Host "  skip: no DSH profile found under $profilesDir"
+} else {
+  $dshCmd = Get-Command dsh -ErrorAction SilentlyContinue
+  if (-not $dshCmd) {
+    throw "dsh not found on PATH - the bundle is installed through 'dsh plugin --profile <p> add <dir>'"
+  }
+  foreach ($profileName in $targetProfiles) {
+    dsh plugin --profile $profileName add $bundleDir
+    if ($LASTEXITCODE -ne 0) { throw "failed to install the bundle into profile '$profileName'" }
+    $selectedIn += $profileName
+    Write-Host "  OK bundle installed + selected in dsh.profile.bundles (profile: $profileName)"
+  }
+}
+
 function Write-InstallManifest($path, $roots, $targets) {
   $sb = New-Object System.Text.StringBuilder
-  [void]$sb.AppendLine('schema_version: 1')
+  [void]$sb.AppendLine('schema_version: 2')
   [void]$sb.AppendLine("# Auto-generated by install.ps1 - do not hand-edit (regenerated on install).")
   [void]$sb.AppendLine("source_root: $($roots -replace '\\', '/')")
   [void]$sb.AppendLine("source_commit: $sourceCommit")
   [void]$sb.AppendLine("installed_at: $installedAt")
+  [void]$sb.AppendLine("bundle_name: $bundleName")
+  [void]$sb.AppendLine("bundle_patch: $($patchRel -replace '\\', '/')")
+  [void]$sb.AppendLine("selected_in_profiles: [$(($selectedIn | ForEach-Object { "'$_'" }) -join ', ')]")
   [void]$sb.AppendLine('artifacts:')
   foreach ($t in ($targets | Sort-Object id)) {
     [void]$sb.AppendLine("  - id: $($t.id)")
@@ -212,17 +287,16 @@ function Write-InstallManifest($path, $roots, $targets) {
   Set-Content -Path $path -Value $sb.ToString() -Encoding UTF8
 }
 
-Write-InstallManifest (Join-Path $presetDir 'install-manifest.yaml') $srcRoot $manifestTargets
 $userManifest = Join-Path $userSkills '.re-framework-manifest.yaml'
-Write-InstallManifest $userManifest $srcRoot ($manifestTargets | Where-Object { $_.id -like 'skills/*' })
+Write-InstallManifest $userManifest $srcRoot $manifestTargets
 Write-Host "  wrote install manifest: $($manifestTargets.Count) artifacts @ $sourceCommit"
 
 Write-Host ""
 Write-Host "Installed:"
-Get-ChildItem -Path $presetDir -Recurse -File | ForEach-Object { Write-Host "  $($_.FullName.Replace($presetDir, 'preset'))" }
-$userCount = @(Get-ChildItem -Path $userSkills -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -match '^(core|re|recode|swe|ref)-' }).Count
+Write-Host "  bundle : $bundleName ($bundleDir)"
+if ($selectedIn.Count -gt 0) { Write-Host "  selected in profile(s): $($selectedIn -join ', ')" } else { Write-Host "  selected in profile(s): (none - no DSH profile found)" }
+$userCount = @(Get-ChildItem -Path $userSkills -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -match $skillNamespace }).Count
 Write-Host "  user-global skills: $userCount ref-family directories (expected 17)"
 Write-Host ""
-Write-Host "Next: run scripts/selfcheck.ps1 to verify. ref-* skills are user-global (any session);"
-Write-Host "      the ref_* tools exist ONLY on the re-framework preset (python scripts remain callable"
-Write-Host "      directly via pwsh in any session: python scripts/merge_index.py <project>, ...)."
+Write-Host "Next: run scripts/selfcheck.ps1 to verify; open a NEW session (or wait for the"
+Write-Host "      profile hot-reload) and pick the 'RE-Framework' agent preset."

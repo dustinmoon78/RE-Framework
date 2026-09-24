@@ -1,16 +1,19 @@
 /**
  * audit_preset_rows.mjs — preset 行解析性门禁（fail-closed）
  *
- * 用途：校验 re-framework agent preset composition 里每一行的 `name:` 能否在当前
- *       harness 版本中解析。上游改名/移除插件包时本脚本非零退出，避免等用户 resume
- *       会话时才看到 `failed to mount`（2026-09-09 上游漂移事故：
- *       @deepseek-ai/dsh-workflow-worker-thread 改名 @deepseek-ai/dsh-workflow-ptc，
- *       见 .investigations/dsh-upstream-drift-20260909/报告.md）。
+ * 用途：校验 re-framework agent preset 的每一行 `name:` 能否在当前 harness 版本中解析。
+ *       上游改名/移除插件包时本脚本非零退出，避免等用户 resume 会话时才看到挂载失败。
+ *       两类事故都由本门禁负责拦下：
+ *         - 2026-09-09 上游包改名（`dsh-workflow-worker-thread` → `dsh-workflow-ptc`）
+ *         - **2026-09-23 载体迁移**：DSH 0.1.7 把 preset 载体从
+ *           `$DSH_HOME/.agent-presets/<id>/` 目录换成 **bundle patch 声明行**。旧门禁
+ *           既不认识新载体、也不走 `config.plugins[]`，于是**全绿而 resume 报
+ *           `Unknown agent preset`**。递归 1/3（见 `rowNames`）即该事故的修复本体。
  *
  * 用法：
- *   node dsh/tests/audit_preset_rows.mjs                          # 默认：源码 composition + 已安装副本（若存在）
- *   node dsh/tests/audit_preset_rows.mjs <composition.yml ...>    # 指定源码 composition（跳过 ./ 本地行）
- *   node dsh/tests/audit_preset_rows.mjs --installed <preset ...> # 校验 ~/.dsh/.agent-presets/<名>/agent.cordis.yml
+ *   node dsh/tests/audit_preset_rows.mjs                        # 默认：本仓库 bundle patch（dsh/cordis.patch.yml）
+ *   node dsh/tests/audit_preset_rows.mjs <file.yml ...>         # 指定文件（bundle patch 或旧 entry list）
+ *   node dsh/tests/audit_preset_rows.mjs --installed <preset>   # 校验历史 ~/.dsh/.agent-presets/<名>/（仅排查用）
  *
  * 环境：
  *   DSH_CHECKOUT     harness 源码 checkout（默认 D:\git\deepseek-harness）
@@ -20,9 +23,13 @@
  * 判据（镜像上游 `classifyRowSpecifier()` @ agent-presets/src/specifier.ts
  * + `packageInstalled()` @ agent-presets/src/discovery.ts）：
  *   - `cordis:` 前缀     → 内置行，Loader 自带，放行
- *   - 以 `.` 开头        → preset 自带文件，相对 composition 所在目录解析；
- *                          源码树跳过（install.ps1 拷贝后才成立），已安装副本要求文件存在
+ *   - 以 `.` 开头        → bundle 自带文件，锚定在**该 patch 文件所在目录**（上游
+ *                          `anchorInsertedPluginNames()` 语义；仅顶层 insert 生效，
+ *                          `config.plugins[]` 内的相对路径**不会**被锚定）
  *   - `file:` / 绝对路径 → 文件 URL，要求文件存在（Windows 盘符路径必须走 file URL）
+ *   - **本 bundle 自身的包** → 由安装步骤以依赖形式进入 profile，按设计不在 harness base
+ *                          下；用本仓库 `dsh/package.json` 的 exports 校验子路径**且**
+ *                          要求其指向的文件存在（只校验键会让"插件被改名/移动"照样绿）
  *   - 其余               → 包名，从 **已安装 harness 基准**（harness base）向上走
  *                          node_modules 查找（上游同款）；命中后再用 workspace manifest
  *                          校验子路径是否在 exports 内（比上游健康检查更严，因 exports
@@ -83,26 +90,33 @@ function detectHarnessBase() {
 const HARNESS_BASE = detectHarnessBase() ?? join(HARNESS, 'apps', 'cli')
 const HOME = process.env.DSH_HOME ?? join(process.env.USERPROFILE ?? '', '.dsh')
 
-const PRESET_NAME = 're-framework'
-
 const args = process.argv.slice(2)
 const installedMode = args.includes('--installed')
 const positional = args.filter(a => !a.startsWith('--'))
 
 /** 目标文件：[{ file, sourceTree }] */
+const DEFAULT_PATCH = join(REPO, 'dsh', 'cordis.patch.yml')
 let files
 if (installedMode) {
+  // 旧目录形态已死（DSH >= 0.1.7 无任何代码读 .agent-presets/）。保留该开关仅用于
+  // 显式排查历史副本；它**不再是** selfcheck 的默认路径。
   files = positional.map(name => ({
     file: join(HOME, '.agent-presets', name, 'agent.cordis.yml'),
     sourceTree: false,
   }))
 } else if (positional.length > 0) {
-  files = positional.map(f => ({ file: f, sourceTree: true }))
+  // 显式指定的文件按真实载体处理（相对行必须存在——bundle patch 就地生效，不像
+  // 旧形态那样要等 install 拷贝）。
+  files = positional.map(f => ({ file: f, sourceTree: false }))
 } else {
-  // selfcheck 默认：源码 composition（跳过 ./ 本地行）+ 已安装副本（若存在）
-  files = [{ file: join(REPO, 'dsh', 'preset', 'agent.cordis.yml'), sourceTree: true }]
-  const installed = join(HOME, '.agent-presets', PRESET_NAME, 'agent.cordis.yml')
-  if (existsSync(installed)) files.push({ file: installed, sourceTree: false })
+  // selfcheck 默认：**bundle patch**（DSH >= 0.1.7 的 preset 载体）。
+  // 主目标缺失 = 门禁失效，必须报错而非静默跳过——本门禁存在的理由就是
+  // "别让会话在运行时才发现 preset 挂不上"（2026-09-23 事故）。
+  if (!existsSync(DEFAULT_PATCH)) {
+    console.log(`FAIL: bundle patch not found at ${DEFAULT_PATCH} — nothing to verify`)
+    process.exit(1)
+  }
+  files = [{ file: DEFAULT_PATCH, sourceTree: false }]
 }
 
 // ── 解析器（harness 的 entryListSchema + 其 js-yaml）；缺失则跳过并显式说明 ──
@@ -178,21 +192,29 @@ function collectPackages() {
 
 const packages = collectPackages()
 
-// 基准健全性探测（须在行名可解析之后）：错基准 → exit 2，而不是满屏假 BAD。
+/**
+ * 本仓库自己的 bundle 清单（`dsh/package.json`）。bundle 的 preset 行用**裸包名**
+ * 指向自身插件（`<name>/plugin`）——该包由安装步骤以依赖形式进入 profile，既不在
+ * harness 里、也不在任何 node_modules 中，所以**不能**走 harness base 查找，只能用
+ * 本仓库清单的 `exports` 校验子路径 + 目标文件存在。
+ */
+const SELF_BUNDLE = (() => {
+  const p = join(REPO, 'dsh', 'package.json')
+  if (!existsSync(p)) return undefined
+  try {
+    const m = JSON.parse(readFileSync(p, 'utf8'))
+    return typeof m?.name === 'string' ? { name: m.name, exports: m.exports } : undefined
+  } catch { return undefined }
+})()
+
+// 基准健全性探测（错基准 → exit 2，而不是满屏假 BAD）。复用 rowNames（函数声明提升）
+// 以保证探测与正式审计走**同一套**遍历——否则会出现"探测看得见、审计看不见"（或
+// 反之）的错位，正是 2026-09-23 事故的形态。
 {
   const target = files.find(f => existsSync(f.file))
   let probeNames = []
   if (target) {
-    try {
-      const rows = yaml.load(readFileSync(target.file, 'utf8'), { schema: include.entryListSchema })
-      const walk = list => {
-        for (const row of list) {
-          if (typeof row?.name === 'string') probeNames.push(row.name)
-          if (Array.isArray(row?.config)) walk(row.config)
-        }
-      }
-      walk(rows)
-    } catch { probeNames = [] }
+    try { probeNames = rowNames(target.file) } catch { probeNames = [] }
   }
   if (probeNames.length > 0 && !baseLooksUsable(HARNESS_BASE, probeNames)) {
     console.log(`SKIP: harness base ${HARNESS_BASE} resolves none of this preset's packages — wrong base?`)
@@ -201,14 +223,27 @@ const packages = collectPackages()
   }
 }
 
-/** composition 里全部行的 name（含嵌套 group） */
+/**
+ * 收集所有行的 `name`。必须覆盖**两种载体 + 三条递归路径**，缺一即漏检：
+ *   载体 a. bundle patch（顶层是 `- insert: [...]`；DSH >= 0.1.7 的 preset 载体）
+ *   载体 b. 旧 entry list（顶层直接是行数组；<= 0.1.6）
+ *   递归 1. `insert[]`          —— 载体 a 的行在这里
+ *   递归 2. `config[]`          —— group 子行
+ *   递归 3. `config.plugins[]`  —— **preset 行的子行列表，新机制的全部内容**
+ *
+ * 2026-09-23 事故：本函数原先只走递归 2、且不认识载体 a。上游 0.1.7 把 preset 换成
+ * bundle patch 后，本门禁**全绿**而会话 resume 报 `Unknown agent preset: re-framework`。
+ * 递归 1/3 是那次事故的修复本体，**勿删**。
+ */
 function rowNames(file) {
   const rows = yaml.load(readFileSync(file, 'utf8'), { schema: include.entryListSchema })
   const out = []
   const walk = list => {
-    for (const row of list) {
+    for (const row of list ?? []) {
+      if (Array.isArray(row?.insert)) walk(row.insert)                    // 载体 a
       if (typeof row?.name === 'string') out.push(row.name)
-      if (Array.isArray(row?.config)) walk(row.config)
+      if (Array.isArray(row?.config)) walk(row.config)                    // group 子行
+      if (Array.isArray(row?.config?.plugins)) walk(row.config.plugins)   // preset 子行
     }
   }
   walk(rows)
@@ -252,8 +287,9 @@ function classify(name, presetDir, sourceTree) {
   const row = classifyRowSpecifier(name)
   if (row.kind === 'builtin') return { ok: true, why: 'cordis builtin' }
   if (row.kind === 'preset') {
-    // preset 自带文件随 preset 一起走：install.ps1 把 preset/ 拷进
-    // ~/.dsh/.agent-presets/<id>/ 后，相对路径在 preset 目录内解析。源码树尚未拷贝。
+    // bundle 自带文件随 bundle 一起走：`.` 开头的行锚定在**该 patch 文件所在目录**
+    // （上游 anchorInsertedPluginNames() 语义）。注意 preset 行**不是** group，故其
+    // config.plugins[] 内的相对路径**不会**被锚定——那里的本地插件必须用裸包名子路径。
     if (sourceTree) return { ok: true, why: 'preset-relative path (source tree — travels on install)' }
     const target = resolve(presetDir, row.specifier)
     return existsSync(target) ? { ok: true, why: 'preset-relative file' } : { ok: false, why: `preset file missing: ${target}` }
@@ -266,6 +302,32 @@ function classify(name, presetDir, sourceTree) {
       return { ok: false, why: `malformed file row: ${e.message}` }
     }
     return existsSync(target) ? { ok: true, why: 'file row' } : { ok: false, why: `file row missing: ${target}` }
+  }
+  // 自引用：bundle 自身的包（preset 里的本地插件行）。它由安装步骤装进 profile，
+  // 按设计就不在 harness base 下——用本仓库 bundle 清单的 exports 校验子路径，
+  // 而不是误报"上游改名/移除"。
+  const selfBase = row.specifier.startsWith('@')
+    ? row.specifier.split('/').slice(0, 2).join('/')
+    : row.specifier.split('/')[0]
+  if (SELF_BUNDLE !== undefined && selfBase === SELF_BUNDLE.name) {
+    const selfSub = row.specifier.slice(selfBase.length).replace(/^\//, '')
+    const keys = Object.keys(SELF_BUNDLE.exports ?? {})
+    if (selfSub !== '' && !keys.includes(`./${selfSub}`)) {
+      return { ok: false, why: `self-bundle subpath ./${selfSub} not in exports (have: ${keys.join(', ') || 'none'})` }
+    }
+    // exports 里有这个键还不够：**它指向的文件必须存在**。只校验键会让"插件文件
+    // 被改名/移动"照样绿——与 2026-09-23 事故同一失效类（门禁绿、运行时挂载失败）。
+    if (selfSub !== '') {
+      const entry = SELF_BUNDLE.exports[`./${selfSub}`]
+      const rel = typeof entry === 'string' ? entry : entry?.default
+      if (typeof rel !== 'string') {
+        return { ok: false, why: `self-bundle export ./${selfSub} has no string target` }
+      }
+      if (!existsSync(join(REPO, 'dsh', rel))) {
+        return { ok: false, why: `self-bundle export ./${selfSub} points at a missing file: dsh/${rel}` }
+      }
+    }
+    return { ok: true, why: `self bundle (${SELF_BUNDLE.name})` }
   }
   // 包名行 —— 上游判据是从 harness base 向上走 node_modules。
   // 在那里找不到的包，挂载时必然 import 失败。
@@ -288,7 +350,7 @@ function classify(name, presetDir, sourceTree) {
 
 let bad = 0
 for (const { file, sourceTree } of files) {
-  console.log(`\n== ${file}${sourceTree ? '  (source tree)' : '  (installed)'}`)
+  console.log(`\n== ${file}${installedMode ? '  (legacy installed copy — 排查用)' : ''}`)
   if (!existsSync(file)) {
     // 显式传入的目标文件不存在 = 调用错误，不是"跳过"（否则拼错路径会假绿）
     if (positional.length > 0 || installedMode) {

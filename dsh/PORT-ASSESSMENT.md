@@ -4,6 +4,10 @@
 > 源项目：`E:\PYTHON\RE-Framework`（RE-Framework v2，逆向 + 编程通用工程方法论框架，spec/engineering-framework-v1.md）
 > 参照先例：`E:\PYTHON\Anchorlaw\dsh`（Anchorlaw 协议 DSH 宿主适配层，2026-08-12 完成）
 > 结论：**可移植性高**——16/16 技能正文零漂移落地，5 个工具封装 Python 脚本，完整工作流通过 agent preset 打包。
+>
+> ⚠️ **历史存档（迁移前快照，≤ DSH 0.1.6）**：本文写于 preset 载体迁移之前，其中提到的
+> `dsh/preset/`、`~/.dsh/.agent-presets/re-framework/`、`scripts/sync_skills.py` **均已不存在**。
+> 当前载体见 `dsh/cordis.patch.yml`（ACTIVE carrier）与 `dsh/AGENTS.md` §二。**本文内容按历史原样保留，不追改。**
 
 ---
 

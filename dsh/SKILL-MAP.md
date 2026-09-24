@@ -43,7 +43,7 @@
 1. **DSH 会话**：用 skill 工具按 **kebab 名**加载（`core-plan` 而非 `core.plan`）。根 AGENTS.md 的 dot 名触发表是 Reasonix 规范形，先查本表映射。
 2. **Reasonix 会话**：按根 AGENTS.md 触发表用 dot 名（规范正文在 `../skills/<dot-name>/SKILL.md`）。
 3. **角色技能**（scout/worker/judge）：DSH 中经 subagent 工具隔离执行——按技能正文的角色契约派发子代理（core-worker / core-judge / re-scout / recode-scout / 以及 anchor-* 角色）。
-4. **正文等价**：DSH 技能正文 = Reasonix 技能正文（sync_skills.py 逐字节守护），语义等价，只有名字不同——按 kebab 名加载即是加载同一份方法论。
+4. **正文即事实源**：`dsh/skills/` 是技能**唯一事实源**（Reasonix 镜像已随 `archive/reasonix/` 归档，不再有 `../skills/` 上游、不再跑 `sync_skills.py`）——按 kebab 名加载即是加载本方法论。
 
 ## 三、工具与脚本（ref_* 仅在 re-framework preset；2026-08-21 后 3 个——manifest_validate/install 随 Reasonix 归档退役）
 

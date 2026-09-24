@@ -18,7 +18,7 @@
 //   ref_init               — create the project skeleton (.artifacts/.investigations/knowledge)
 //
 // Maintained by: DSH agent (RE-Framework maintainer). Source of truth:
-// this repository's dsh/ subtree (preset/ + plugins/ + skills/), per dsh/AGENTS.md.
+// this repository's dsh/ subtree (cordis.patch.yml + plugins/ + skills/), per dsh/AGENTS.md.
 
 export const name = 're-framework-tools'
 export const inject = ['tools']

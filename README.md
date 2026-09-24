@@ -3,7 +3,7 @@
 > 基于《打破传统AI逆向的新思路：多Agent、自主管理上下文》(BitWarden, 看雪学苑 2026.06.18) 的方法论内核，
 > 工程化、Skills化、SubAgents化拆分升级：**领域无关核心 + 按需加载领域模块**，从二进制逆向到代码逆向到常规编程全兼容。
 > **DeepSeek Harness（DSH）是唯一维护宿主**（2026-08-21 起；Reasonix 宿主格式已归档至 `archive/reasonix/`，Fork 可恢复自行迭代）。
-> 验证协议继承 [Anchorlaw Protocol v0.22](https://github.com/unknowbug/anchorlaw)（MIT，协议引用，不复制实现）。
+> 验证协议继承 [Anchorlaw Protocol v0.23](https://github.com/unknowbug/anchorlaw)（MIT，协议引用，不复制实现）。
 
 ---
 
@@ -30,12 +30,12 @@ pwsh dsh/scripts/selfcheck.ps1
 ```
 RE-Framework/
 ├── AGENTS.md                  # DSH-first 索引（自动加载入口）
-├── spec/                      # 框架协议（铁律/工作流/产物/知识库/版本）+ Anchorlaw v0.22 引用
+├── spec/                      # 框架协议（铁律/工作流/产物/知识库/版本）+ Anchorlaw v0.23 引用
 ├── dsh/                       # DSH 宿主适配层（唯一维护区）
 │   ├── skills/                # 17 个 ref-* 技能（单一事实源，直接维护）
 │   ├── SKILL-MAP.md           # DSH 探测器（强初始化/路由/Phase 0-3/执行强制链 + dot→kebab 映射）
 │   ├── plugins/re-framework-tools.js   # 3 个 ref_* 模型工具
-│   ├── preset/                # re-framework agent preset
+│   ├── cordis.patch.yml       # agent preset 声明（ACTIVE carrier）
 │   ├── scripts/install.ps1 + selfcheck.ps1 + gen_cheatsheet.py   # 安装 + 五段自检 + 压实派生视图生成模板
 │   ├── tests/                 # test_manifest.py + check_plugin_schema.mjs + audit_preset_rows.mjs
 │   └── AGENTS.md              # DSH 维护入口
@@ -73,6 +73,7 @@ RE-Framework/
 
 | 版本 | 日期 | 内容 |
 |------|------|------|
+| v2.7 | 2026-09-23 | **Anchorlaw 引用 v0.22 → v0.23 升级核对（纯引用版本号，协议核心零变化）**：v0.23 = **DSH 0.1.7 preset 载体迁移**，属 §16 宿主适配范围。**独立复核协议自述**（*"the protocol core is unchanged"*）：§5/§9/§12/§13/§14/§15/§16 **逐节 diff 全为 0**；标题集合 92=92；**全文真实差异共 5 处**（LCS 比对实测）：版本头发布说明 +20 行 / v0.18 条目 supersession 注记 +5 行 / v0.18 DSH changelog 表行 1 行 / §8 Maturity 表行 1 行 / §11 audit 表行 1 行——后三处均为**表格行文本更新，非条款正文**。**方法论坑**：逐节 diff 的归一化必须**同时**把新旧两个版本号归到同一占位符，否则条款标题里字面的旧版本号会伪装成差异。**对宿主的实质影响**：preset 载体由目录改为 **bundle patch 声明行**、`config.plugins[]` 行不做路径锚定（须裸包名子路径）、preset 子树 `baseUrl` 是 **profile 目录**、anchor-* 技能改用户级全局、**项目级安装模式被撤回**。→ 本框架**不依赖**项目级安装，故该撤回不影响既有安装语义；载体迁移影响 dsh 适配层（已临时修复，**正式升级待办**见 `.investigations/dsh-preset-bundle-migration/报告.md` §6）。**引用升级 34 处**（33 处已跟踪 + 1 处生效载体），含**生效载体 `cordis.patch.yml` 的 persona**（该文件当时未被 git 跟踪，`git grep` 扫不到——枚举时必须补 `git status`） |
 | v2.6 | 2026-09-17 | **Anchorlaw v0.22 实质条款升级 + CoreSwap 论文研究吸收**：(1) 引用 v0.21 → **v0.22**——v0.22 新增**五条款**（§9 +37 行 / §14 +34 行 / §15 +75 行），**本次是实质升级非纯版本号**；五条款全部落地（§9.8 副作用边界与逆登记 → spec §5.6 + core-artifact；§15.4 判据前置集 → spec §4.5 + core-judge；§9.7.1 等价档位 → re-lift；§15.4 PI-1 halt 终态性 → spec §4.5 + core-fanout 汇聚完整性；§14.7 引用完整性 → spec §3 检查动作）。(2) **安装产物具备身份**——`install.ps1` 写 sha256 manifest，`selfcheck.ps1` 第 3 段从「数目录」升级为**内容对账**（MISSING/DRIFT/ORPHAN），并补两个既有真空洞：用户级 orphan 残留清理（限本框架命名空间，**绝不误删 `anchor-*`**）+ profile patch 改写前备份。(3) 新增触发点产物门 `audit_trigger_coverage.mjs`（**只判"触发后有无产物"，不判"该不该触发"**；实测误报率 **1.1%**）。(4) 交接声明证据等级（numeric 可继承 / qualitative 须回原始日志 / anchor 须属主自核），**限定语义性交接**避免过度工程 |
 | v2.5 | 2026-09-17 | **Anchorlaw 引用 v0.20 → v0.21 升级核对**：v0.21 为**宿主适配层进展登记**（preset 能力面对齐 + fail-closed preset 行解析门禁），**协议核心逐字节未变**——比对方法：`protocol-v0.20.md` 与 `protocol-v0.21.md` 正文（changelog 之前）归一化版本号后逐行 diff，唯一差异为版本头部发布说明 16 行；§5/§9/§12/§13/§14/§15/§16 逐节零差异，§11/§16 零差异，**§8 Maturity 表行数不变**（仅 Host Integration 行文本补 v0.21 说明）。**纯引用版本号升级，无语义迁移**。详见 spec §3 新增核对行 + `dsh/SYNC.md` |
 | v2.4 | 2026-09-09 | **上游 DSH 漂移修复 + 能力面对齐**：(1) 上游把 `@deepseek-ai/dsh-workflow-worker-thread` 改名为 `@deepseek-ai/dsh-workflow-ptc`（旧目录已不再是包）——preset 仍引用旧名，导致 **preset 挂载失败、会话无法创建/恢复**（`failed to mount`）；`id`+`name` 随上游改名，`config` 不变。(2) 能力面对齐官方 standard preset（31 行）：补 5 行——`command-goal`、`present`（启用）、`tool-ralph`、`tool-subagent-codex`、`tool-subagent-claude-code`（按上游默认 disabled，启用需在 Profile 装对应 Bundle）→ **ours 32 = official 31 + 本地 `re-framework-tools`，缺口 0**。(3) 新增 fail-closed 门禁 `tests/audit_preset_rows.mjs` 并接入 `selfcheck.ps1` 第 [5] 项——preset 任一行不可解析即自检变红，不再等用户 resume 报错（2026-09-09 漂移事故，`.investigations/dsh-upstream-drift-20260909/报告.md`）。(4) 同日第二轮：**preset 行 specifier 解析语义对齐上游**（`classifyRowSpecifier()` 四分类 + 包名自 harness base 向上走查；错基准 fail-closed） |

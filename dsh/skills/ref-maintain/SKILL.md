@@ -7,7 +7,7 @@ whenToUse: 维护 RE-Framework 的 DSH 适配层（dsh/ 子树）时——任何
 # ref-maintain — RE-Framework DSH 适配层维护
 
 > 定位：对齐 Anchorlaw 的 anchor-maintain 思路——框架必须能维护自己。
-> 适用范围：`dsh/` 子树（skills/、plugins/、preset/、scripts/、tests/、SYNC.md、AGENTS.md、SKILL-MAP.md）。
+> 适用范围：`dsh/` 子树（skills/、plugins/、**cordis.patch.yml + package.json**、scripts/、tests/、SYNC.md、AGENTS.md、SKILL-MAP.md）。
 > 单一事实源：`dsh/skills/` 是技能唯一事实源（2026-08-21 Reasonix 归档后直接维护）；技能正文内的 dot 名是规范引用，按 `dsh/SKILL-MAP.md` §一 映射到 kebab 名加载。
 > 接口速查：DSH 会话按 `dsh/SKILL-MAP.md`（DSH 探测器 + dot→kebab 映射 + ref_* 工具/脚本对照）调用。
 
@@ -24,7 +24,7 @@ whenToUse: 维护 RE-Framework 的 DSH 适配层（dsh/ 子树）时——任何
 
 ## Anchorlaw 协议升级核对
 
-- Anchorlaw 协议引用版本（当前基线 v0.22，`git grep 'v0\.[0-9]'` 核对）或 `spec/engineering-framework-v1.md` 变更后：
+- Anchorlaw 协议引用版本（当前基线 v0.23，`git grep 'v0\.[0-9]'` 核对）或 `spec/engineering-framework-v1.md` 变更后：
   1. 对照 Anchorlaw changelog 核对 spec §3 同步契约（条款保留/版本基线/同源双写）；
   2. 更新 `dsh/SYNC.md`（来源 commit/时间/差异）；
   3. 若涉及技能正文语义：直接改 `dsh/skills/` 对应技能，并在 `tests/test_manifest.py` 的 ADAPT/EXPECTED 中同步（改名/新增时）；
